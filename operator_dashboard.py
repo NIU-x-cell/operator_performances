@@ -75,7 +75,14 @@ base_sub_params = tuple(select_dept) + (start_dt, end_dt)
 base_df = run_sql_query(base_sub_sql, params=base_sub_params)
 # 统一转为datetime，防止日期计算报错
 base_df["stat_date"] = pd.to_datetime(base_df["stat_date"])
-
+# 在 base_df 加载后，直接运行调试代码确认总和
+debug_df = base_df[
+    (base_df["operator_name"] == "王学良") &
+    (base_df["data_category"].str.contains("业绩", na=False))
+]
+print("王学良 本周业绩明细：")
+print(debug_df[["stat_date", "daily_value"]])
+print("正确总业绩 =", debug_df["daily_value"].sum())
 
 # ========== 页面1：总览大盘 ==========
 if page_flag == "overview":
@@ -330,19 +337,27 @@ elif page_flag == "oper_rank":
         st.session_state.select_oper_val = ""
 
     def get_person_sum(df, cat):
-        cat_df = df[df["data_category"].str.contains(cat)]
-        # 移除team_leader分组字段
+        cat_df = df[df["data_category"].str.contains(cat, na=False)]
         return cat_df.groupby(["dept_manager", "operator_name"])["daily_value"].sum()
 
     gmv_person_all = get_person_sum(base_df, "业绩")
     order_person_all = get_person_sum(base_df, "订单")
     goods_person_all = get_person_sum(base_df, "上品")
+    # 新增：读取商品优化聚合数据
+    opt_person_all = get_person_sum(base_df, "优化")
 
-    rank_df_all = pd.concat([gmv_person_all, order_person_all, goods_person_all], axis=1).fillna(0)
-    rank_df_all.columns = ["total_gmv", "total_order", "total_new_goods"]
+    # 对齐索引，保证全部运营行合并正确
+    all_index = gmv_person_all.index.union(order_person_all.index).union(goods_person_all.index).union(opt_person_all.index)
+    gmv_person_all = gmv_person_all.reindex(all_index, fill_value=0)
+    order_person_all = order_person_all.reindex(all_index, fill_value=0)
+    goods_person_all = goods_person_all.reindex(all_index, fill_value=0)
+    opt_person_all = opt_person_all.reindex(all_index, fill_value=0)
+
+    # 拼接时加入优化列
+    rank_df_all = pd.concat([gmv_person_all, order_person_all, goods_person_all, opt_person_all], axis=1).fillna(0)
+    rank_df_all.columns = ["total_gmv", "total_order", "total_new_goods", "total_optimize"]
     rank_df_all = rank_df_all.reset_index().sort_values("total_gmv", ascending=False)
-    # 去掉team_leader列名
-    rank_df_all.columns = ["部门负责人", "运营姓名", "total_gmv", "total_order", "total_new_goods"]
+    rank_df_all.columns = ["部门负责人", "运营姓名", "total_gmv", "total_order", "total_new_goods", "total_optimize"]
 
     col_dept, col_oper = st.columns(2)
 
@@ -401,18 +416,18 @@ elif page_flag == "oper_rank":
         on = st.session_state.select_oper_val.split(" (")[0]
         filter_rank_df = filter_rank_df[filter_rank_df["运营姓名"] == on]
 
+    # 新增商品优化总数中文表头、数字格式化
     styled_table = filter_rank_df.rename(columns={
         "total_gmv": "总卢布业绩",
         "total_order": "总订单量",
-        "total_new_goods": "累计上品数"
-    }).style.format("{:.2f}", subset=["总卢布业绩"]).format("{:.0f}", subset=["总订单量","累计上品数"])
+        "total_new_goods": "累计上品数",
+        "total_optimize": "商品优化总数"
+    }).style.format("{:.2f}", subset=["总卢布业绩"]).format("{:.0f}", subset=["总订单量","累计上品数","商品优化总数"])
     st.dataframe(styled_table, use_container_width=True)
 
     # TOP20柱状图不受筛选影响
     fig_rank_top20 = px.bar(rank_df_all.head(20), x="运营姓名", y="total_gmv", color="部门负责人", title="TOP20运营业绩榜单")
     st.plotly_chart(fig_rank_top20, use_container_width=True)
-
-
 # ========== 页面4：异常预警面板（核心业务需求） ==========
 elif page_flag == "anomaly_warn":
     st.header("⚠️ 运营异常监控面板")
